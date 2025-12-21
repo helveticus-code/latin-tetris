@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Latin Case Blocks v17 (Phone)</title>
+
+<style>
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: sans-serif;
+  color: #fff;
+  user-select: none;
+
+  /* BACKGROUND SVG */
+  background: url("pool.svg") center / cover no-repeat fixed;
+}
+
+@media (pointer: coarse), (max-width: 820px) {
+  /* Mobile browsers often struggle with fixed backgrounds; also "crop" by shifting position */
+  html, body {
+    background-attachment: scroll;
+    background-position: center top;
+  }
+}
+
+/* dark overlay for readability */
+#bgOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 0;
+}
+
+canvas {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  touch-action: none;
+}
+
+#pauseBtn {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  padding: 8px 12px;
+  font-size: 16px;
+}
+
+#startScreen, #endScreen {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+button {
+  margin: 8px;
+  padding: 10px 18px;
+  font-size: 18px;
+}
+
+/* Mobile controls */
+#mobileControls {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 7;
+  display: none;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  background: rgba(0,0,0,0.35);
+  backdrop-filter: blur(6px);
+}
+
+#mobileControls.forceHidden { display: none !important; }
+
+@media (pointer: coarse), (max-width: 820px) {
+  #mobileControls { display: flex; }
+}
+
+.ctrlBtn {
+  width: 72px;
+  height: 60px;
+  border: 0;
+  border-radius: 14px;
+  font-size: 26px;
+  color: #fff;
+  background: rgba(255,255,255,0.18);
+  touch-action: manipulation;
+}
+
+.ctrlBtn:active { transform: scale(0.98); }
+</style>
+</head>
+
+<body>
+
+<div id="bgOverlay"></div>
+
+<canvas id="game"></canvas>
+<button id="pauseBtn">Pause</button>
+
+<!-- phone controls -->
+<div id="mobileControls" class="forceHidden" aria-label="Phone controls">
+  <button id="btnLeft" class="ctrlBtn" aria-label="Left">◀</button>
+  <button id="btnDown" class="ctrlBtn" aria-label="Down">▼</button>
+  <button id="btnRight" class="ctrlBtn" aria-label="Right">▶</button>
+</div>
+
+<div id="startScreen">
+  <h1>Latin Case Blocks</h1>
+  <p>First Declension Singular</p>
+  <button id="volumeToggle">Music: ON</button>
+  <button id="playBtn">Play</button>
+</div>
+
+<div id="endScreen" style="display:none;">
+  <h1 id="endMsg"></h1>
+  <button id="restart">Play Again</button>
+</div>
+
+<script>
+/* ================= AUDIO ================= */
+
+const music = new Audio("tetris.mp3");
+music.loop = true;
+music.volume = 0.25;
+
+let musicOn = true;
+
+/* ================= CANVAS ================= */
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+/* ================= UI LAYOUT ================= */
+
+const FOOTER_H = 90;          // the column label band height
+let controlsH = 0;            // computed mobile control bar height
+
+const mobileControls = document.getElementById("mobileControls");
+
+function recomputeLayout() {
+  const visibleByCSS = getComputedStyle(mobileControls).display !== "none";
+  const visibleByCode = !mobileControls.classList.contains("forceHidden");
+  controlsH = (visibleByCSS && visibleByCode)
+    ? Math.round(mobileControls.getBoundingClientRect().height)
+    : 0;
+}
+
+function baseY() {
+  // top of the footer band (column labels)
+  return canvas.height - controlsH - FOOTER_H;
+}
+
+function resize() {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+  recomputeLayout();
+}
+resize();
+addEventListener("resize", resize);
+addEventListener("orientationchange", () => setTimeout(resize, 50));
+
+/* ================= GAME DATA ================= */
+
+const COLS = 5;
+const STACK_TARGET = 3;
+const colNames = ["Nom", "Acc", "Gen", "Dat", "Abl"];
+
+const ENDINGS = [
+  {e:"-a", c:0},{e:"-a", c:0},{e:"-a", c:0},
+  {e:"-am", c:1},{e:"-am", c:1},{e:"-am", c:1},
+  {e:"-ae", c:2},{e:"-ae", c:2},{e:"-ae", c:2},
+  {e:"-ae", c:3},{e:"-ae", c:3},{e:"-ae", c:3},
+  {e:"-ā", c:4},{e:"-ā", c:4},{e:"-ā", c:4}
+];
+
+let spawn = [];
+let falling = null;
+let stacks = [[],[],[],[],[]];
+
+let lives = 6;
+let paused = false;
+let win = false;
+let lose = false;
+let started = false;
+
+/* CONSTANT SPEED */
+const FALL_SPEED = 2.5;
+
+/* ================= HELPERS ================= */
+
+function colWidth() { return canvas.width / COLS; }
+function stackHeight() { return Math.min(56, colWidth() * 0.55); }
+
+function resetSpawn() {
+  spawn = ENDINGS.slice();
+  for (let i = spawn.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [spawn[i], spawn[j]] = [spawn[j], spawn[i]];
+  }
+}
+
+function spawnBlock() {
+  if (falling || spawn.length === 0 || win || lose) return;
+  const b = spawn.pop();
+  falling = {
+    col: Math.floor(Math.random() * COLS),
+    y: -60,
+    size: colWidth() * 0.6,
+    e: b.e,
+    c: b.c,
+    fast: false
+  };
+}
+
+/* ================= DRAW ================= */
+
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  ctx.font = "20px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "#fff";
+  ctx.fillText("Lives: " + lives, 10, 10);
+
+  const bY = baseY();
+
+  // footer band + column names
+  for (let i=0;i<COLS;i++) {
+    const x = i * colWidth();
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.strokeRect(x, bY, colWidth(), FOOTER_H);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#fff";
+    ctx.textBaseline = "top";
+    ctx.fillText(colNames[i], x + colWidth()/2, bY + FOOTER_H - 30);
+  }
+
+  // stacks
+  for (let c=0;c<COLS;c++) {
+    for (let s=0;s<stacks[c].length;s++) {
+      const y = bY - (s+1)*stackHeight();
+      ctx.fillStyle = "#2f7d32";
+      ctx.fillRect(c*colWidth()+6, y, colWidth()-12, stackHeight()-4);
+
+      if (stacks[c].length === STACK_TARGET && s === STACK_TARGET-1) {
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(
+          stacks[c][s],
+          c*colWidth()+colWidth()/2,
+          y+stackHeight()/2
+        );
+      }
+    }
+  }
+
+  // falling block
+  if (falling) {
+    ctx.fillStyle = "#b71c1c";
+    ctx.fillRect(
+      falling.col*colWidth()+10,
+      falling.y,
+      colWidth()-20,
+      falling.size
+    );
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(
+      falling.e,
+      falling.col*colWidth()+colWidth()/2,
+      falling.y+falling.size/2
+    );
+  }
+}
+
+/* ================= UPDATE ================= */
+
+function update() {
+  if (!started || paused || win || lose || !falling) return;
+
+  falling.y += falling.fast ? FALL_SPEED * 5 : FALL_SPEED;
+
+  const bY = baseY();
+  const targetY = bY - stacks[falling.col].length * stackHeight();
+
+  if (falling.y + falling.size >= targetY) {
+    const correctCols = (falling.e === "-ae") ? [2, 3] : [falling.c];
+
+    const placeIfRoom = (col) => {
+      if (stacks[col].length >= STACK_TARGET) return false; // hard cap
+      stacks[col].push(falling.e);
+      return true;
+    };
+
+    let placed = false;
+
+    if (correctCols.includes(falling.col)) {
+      placed = placeIfRoom(falling.col);
+
+      if (!placed && correctCols.length === 2) {
+        const other = (falling.col === correctCols[0]) ? correctCols[1] : correctCols[0];
+        placed = placeIfRoom(other);
+      }
+
+      if (!placed) {
+        // correct-but-full: recycle with no life loss
+        spawn.push({ e: falling.e, c: falling.c });
+      }
+    } else {
+      lives--;
+      spawn.push({ e: falling.e, c: falling.c });
+      if (lives <= 0) lose = true;
+    }
+
+    falling = null;
+
+    if (stacks.every(s => s.length >= STACK_TARGET)) win = true;
+
+    if (!win && !lose) spawnBlock();
+  }
+}
+
+/* ================= CONTROLS ================= */
+
+function setPaused(next) {
+  paused = next;
+
+  const pb = document.getElementById("pauseBtn");
+  pb.textContent = paused ? "Resume" : "Pause";
+
+  if (paused) {
+    music.pause();
+  } else if (musicOn && started && !win && !lose) {
+    music.play().catch(() => {});
+  }
+}
+
+// allow crossing completed (3-high) stacks by skipping them
+function moveHoriz(dir) {
+  if (!falling) return;
+  let n = falling.col + dir;
+
+  while (n >= 0 && n < COLS && stacks[n].length >= STACK_TARGET) {
+    n += dir;
+  }
+  if (n >= 0 && n < COLS) falling.col = n;
+}
+
+addEventListener("keydown", e => {
+  if (["ArrowLeft","ArrowRight","ArrowDown","Space"].includes(e.code)) e.preventDefault();
+
+  if (e.code === "Space") {
+    if (!started || win || lose) return;
+    setPaused(!paused);
+    return;
+  }
+
+  if (paused || win || lose || !falling) return;
+
+  if (e.key === "ArrowLeft") moveHoriz(-1);
+  if (e.key === "ArrowRight") moveHoriz(1);
+  if (e.key === "ArrowDown") falling.fast = true;
+});
+
+addEventListener("keyup", e => {
+  if (paused || win || lose) return;
+  if (falling && e.key === "ArrowDown") falling.fast = false;
+});
+
+canvas.addEventListener("dblclick", () => {
+  if (paused || win || lose) return;
+  if (falling) falling.fast = true;
+});
+
+/* ================= PHONE BUTTONS ================= */
+
+let repeatTimer = null;
+let repeatInterval = null;
+
+function startRepeat(fn) {
+  fn();
+  repeatTimer = setTimeout(() => {
+    repeatInterval = setInterval(fn, 120);
+  }, 250);
+}
+
+function stopRepeat() {
+  clearTimeout(repeatTimer);
+  clearInterval(repeatInterval);
+  repeatTimer = null;
+  repeatInterval = null;
+}
+
+function bindHoldButton(el, onStart, onEnd) {
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    if (paused || win || lose || !falling) return;
+    onStart();
+  });
+  el.addEventListener("pointerup", (e) => {
+    e.preventDefault();
+    onEnd && onEnd();
+    stopRepeat();
+  });
+  el.addEventListener("pointercancel", () => {
+    onEnd && onEnd();
+    stopRepeat();
+  });
+  el.addEventListener("pointerleave", () => {
+    onEnd && onEnd();
+    stopRepeat();
+  });
+}
+
+const btnLeft  = document.getElementById("btnLeft");
+const btnDown  = document.getElementById("btnDown");
+const btnRight = document.getElementById("btnRight");
+
+bindHoldButton(btnLeft,
+  () => startRepeat(() => moveHoriz(-1)),
+  () => {}
+);
+
+bindHoldButton(btnRight,
+  () => startRepeat(() => moveHoriz(1)),
+  () => {}
+);
+
+bindHoldButton(btnDown,
+  () => { falling.fast = true; },
+  () => { if (falling) falling.fast = false; }
+);
+
+/* ================= UI ================= */
+
+const volumeToggle = document.getElementById("volumeToggle");
+const playBtn = document.getElementById("playBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+
+function showMobileControls(show) {
+  if (show) mobileControls.classList.remove("forceHidden");
+  else mobileControls.classList.add("forceHidden");
+  recomputeLayout();
+}
+
+volumeToggle.onclick = () => {
+  musicOn = !musicOn;
+  volumeToggle.textContent = "Music: " + (musicOn ? "ON" : "OFF");
+
+  if (!musicOn) {
+    music.pause();
+  } else if (started && !paused && !win && !lose) {
+    music.play().catch(() => {});
+  }
+};
+
+playBtn.onclick = () => {
+  document.getElementById("startScreen").style.display = "none";
+  startGame();
+
+  if (musicOn) {
+    music.currentTime = 0;
+    music.play().catch(() => {});
+  }
+};
+
+pauseBtn.onclick = () => {
+  if (!started || win || lose) return;
+  setPaused(!paused);
+};
+
+document.getElementById("restart").onclick = () => {
+  document.getElementById("endScreen").style.display = "none";
+  startGame();
+
+  if (musicOn) {
+    music.currentTime = 0;
+    music.play().catch(() => {});
+  }
+};
+
+function startGame() {
+  started = true;
+  win = lose = false;
+  lives = 6;
+
+  stacks = [[],[],[],[],[]];
+  falling = null;
+
+  showMobileControls(true);
+  setPaused(false);
+
+  resetSpawn();
+  spawnBlock();
+}
+
+/* ================= LOOP ================= */
+
+function loop() {
+  update();
+  draw();
+
+  if (win || lose) {
+    document.getElementById("endMsg").textContent = win ? "YOU WIN" : "YOU LOSE";
+    document.getElementById("endScreen").style.display = "flex";
+    music.pause();
+    showMobileControls(false);
+  }
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+
+</body>
+</html>

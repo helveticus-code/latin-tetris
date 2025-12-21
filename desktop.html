@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Latin Case Blocks v17</title>
+
+<style>
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: sans-serif;
+  color: #fff;
+  user-select: none;
+
+  /* BACKGROUND SVG */
+  background: url("pool.svg") center / cover no-repeat fixed;
+}
+
+/* dark overlay for readability */
+#bgOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 0;
+}
+
+canvas {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+}
+
+#pauseBtn {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  padding: 8px 12px;
+  font-size: 16px;
+}
+
+#startScreen, #endScreen {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+button {
+  margin: 8px;
+  padding: 10px 18px;
+  font-size: 18px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="bgOverlay"></div>
+
+<canvas id="game"></canvas>
+<button id="pauseBtn">Pause</button>
+
+<div id="startScreen">
+  <h1>Latin Case Blocks</h1>
+  <p>First Declension Singular</p>
+  <button id="volumeToggle">Music: ON</button>
+  <button id="playBtn">Play</button>
+</div>
+
+<div id="endScreen" style="display:none;">
+  <h1 id="endMsg"></h1>
+  <button id="restart">Play Again</button>
+</div>
+
+<script>
+/* ================= AUDIO ================= */
+
+const music = new Audio("tetris.mp3");
+music.loop = true;
+music.volume = 0.25;
+
+let musicOn = true;
+
+/* ================= CANVAS ================= */
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+function resize() {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+}
+resize();
+addEventListener("resize", resize);
+
+/* ================= GAME DATA ================= */
+
+const COLS = 5;
+const STACK_TARGET = 3;
+const colNames = ["Nom", "Acc", "Gen", "Dat", "Abl"];
+
+const ENDINGS = [
+  {e:"-a", c:0},{e:"-a", c:0},{e:"-a", c:0},
+  {e:"-am", c:1},{e:"-am", c:1},{e:"-am", c:1},
+  {e:"-ae", c:2},{e:"-ae", c:2},{e:"-ae", c:2},
+  {e:"-ae", c:3},{e:"-ae", c:3},{e:"-ae", c:3},
+  {e:"-ā", c:4},{e:"-ā", c:4},{e:"-ā", c:4}
+];
+
+let spawn = [];
+let falling = null;
+let stacks = [[],[],[],[],[]];
+
+let lives = 6;
+let paused = false;
+let win = false;
+let lose = false;
+
+let started = false;
+
+/* CONSTANT SPEED */
+const FALL_SPEED = 2.5;
+
+/* ================= HELPERS ================= */
+
+function colWidth() { return canvas.width / COLS; }
+function stackHeight() { return Math.min(56, colWidth() * 0.55); }
+
+function resetSpawn() {
+  spawn = ENDINGS.slice();
+  for (let i = spawn.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [spawn[i], spawn[j]] = [spawn[j], spawn[i]];
+  }
+}
+
+function spawnBlock() {
+  if (falling || spawn.length === 0 || win || lose) return;
+  const b = spawn.pop();
+  falling = {
+    col: Math.floor(Math.random() * COLS),
+    y: -60,
+    size: colWidth() * 0.6,
+    e: b.e,
+    c: b.c,
+    fast: false
+  };
+}
+
+/* ================= DRAW ================= */
+
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  ctx.font = "20px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "#fff";
+  ctx.fillText("Lives: " + lives, 10, 10);
+
+  const baseY = canvas.height - 90;
+
+  for (let i=0;i<COLS;i++) {
+    const x = i * colWidth();
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.strokeRect(x, baseY, colWidth(), 90);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#fff";
+    ctx.textBaseline = "top";
+    ctx.fillText(colNames[i], x + colWidth()/2, canvas.height - 30);
+  }
+
+  for (let c=0;c<COLS;c++) {
+    for (let s=0;s<stacks[c].length;s++) {
+      const y = baseY - (s+1)*stackHeight();
+      ctx.fillStyle = "#2f7d32";
+      ctx.fillRect(c*colWidth()+6, y, colWidth()-12, stackHeight()-4);
+
+      if (stacks[c].length === STACK_TARGET && s === STACK_TARGET-1) {
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(
+          stacks[c][s],
+          c*colWidth()+colWidth()/2,
+          y+stackHeight()/2
+        );
+      }
+    }
+  }
+
+  if (falling) {
+    ctx.fillStyle = "#b71c1c";
+    ctx.fillRect(
+      falling.col*colWidth()+10,
+      falling.y,
+      colWidth()-20,
+      falling.size
+    );
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(
+      falling.e,
+      falling.col*colWidth()+colWidth()/2,
+      falling.y+falling.size/2
+    );
+  }
+}
+
+/* ================= UPDATE ================= */
+
+function update() {
+  if (!started || paused || win || lose || !falling) return;
+
+  falling.y += falling.fast ? FALL_SPEED * 5 : FALL_SPEED;
+
+  const targetY =
+    canvas.height - 90 -
+    stacks[falling.col].length * stackHeight();
+
+  if (falling.y + falling.size >= targetY) {
+    const correctCols = (falling.e === "-ae") ? [2, 3] : [falling.c];
+
+    const placeIfRoom = (col) => {
+      if (stacks[col].length >= STACK_TARGET) return false; // hard cap: never beyond 3
+      stacks[col].push(falling.e);
+      return true;
+    };
+
+    let placed = false;
+
+    // Dropped in a correct column
+    if (correctCols.includes(falling.col)) {
+      placed = placeIfRoom(falling.col);
+
+      // If ambiguous and chosen correct column is full, place into the other correct column if it has space
+      if (!placed && correctCols.length === 2) {
+        const other = (falling.col === correctCols[0]) ? correctCols[1] : correctCols[0];
+        placed = placeIfRoom(other);
+      }
+
+      // If correct but stack(s) full: recycle with no life loss
+      if (!placed) {
+        spawn.push({ e: falling.e, c: falling.c });
+      }
+    } else {
+      // Dropped in a wrong column: lose life and recycle
+      lives--;
+      spawn.push({ e: falling.e, c: falling.c });
+      if (lives <= 0) lose = true;
+    }
+
+    falling = null;
+
+    if (stacks.every(s => s.length >= STACK_TARGET)) win = true;
+
+    if (!win && !lose) spawnBlock();
+  }
+}
+
+/* ================= CONTROLS ================= */
+
+function setPaused(next) {
+  paused = next;
+
+  const pb = document.getElementById("pauseBtn");
+  pb.textContent = paused ? "Resume" : "Pause";
+
+  if (paused) {
+    music.pause();
+  } else if (musicOn && started && !win && !lose) {
+    music.play().catch(() => {});
+  }
+}
+
+// NEW: allow moving across completed (3-high) stacks by skipping them
+function moveHoriz(dir) {
+  if (!falling) return;
+  let n = falling.col + dir;
+
+  // Skip any completed stacks so you can still reach columns beyond them
+  while (n >= 0 && n < COLS && stacks[n].length >= STACK_TARGET) {
+    n += dir;
+  }
+
+  if (n >= 0 && n < COLS) falling.col = n;
+}
+
+addEventListener("keydown", e => {
+  // Prevent page scroll on Space/Arrows
+  if (["ArrowLeft","ArrowRight","ArrowDown","Space"].includes(e.code)) {
+    e.preventDefault();
+  }
+
+  // Space toggles pause
+  if (e.code === "Space") {
+    if (!started || win || lose) return;
+    setPaused(!paused);
+    return;
+  }
+
+  if (paused || win || lose || !falling) return;
+
+  if (e.key === "ArrowLeft") moveHoriz(-1);
+  if (e.key === "ArrowRight") moveHoriz(1);
+
+  // Down arrow = fast drop (hold)
+  if (e.key === "ArrowDown") falling.fast = true;
+});
+
+addEventListener("keyup", e => {
+  if (paused || win || lose) return;
+  if (falling && e.key === "ArrowDown") falling.fast = false;
+});
+
+canvas.addEventListener("dblclick", () => {
+  if (paused || win || lose) return;
+  if (falling) falling.fast = true; // fast until it lands
+});
+
+/* ================= UI ================= */
+
+const volumeToggle = document.getElementById("volumeToggle");
+const playBtn = document.getElementById("playBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+
+volumeToggle.onclick = () => {
+  musicOn = !musicOn;
+  volumeToggle.textContent = "Music: " + (musicOn ? "ON" : "OFF");
+
+  if (!musicOn) {
+    music.pause();
+  } else if (started && !paused && !win && !lose) {
+    music.play().catch(() => {});
+  }
+};
+
+playBtn.onclick = () => {
+  document.getElementById("startScreen").style.display = "none";
+  startGame();
+
+  if (musicOn) {
+    music.currentTime = 0;
+    music.play().catch(() => {});
+  }
+};
+
+pauseBtn.onclick = () => {
+  if (!started || win || lose) return;
+  setPaused(!paused);
+};
+
+document.getElementById("restart").onclick = () => {
+  document.getElementById("endScreen").style.display = "none";
+  startGame();
+
+  if (musicOn) {
+    music.currentTime = 0;
+    music.play().catch(() => {});
+  }
+};
+
+function startGame() {
+  started = true;
+  win = lose = false;
+  setPaused(false);
+
+  stacks = [[],[],[],[],[]];
+  falling = null;
+  lives = 6;
+
+  resetSpawn();
+  spawnBlock();
+}
+
+/* ================= LOOP ================= */
+
+function loop() {
+  update();
+  draw();
+
+  if (win || lose) {
+    document.getElementById("endMsg").textContent =
+      win ? "YOU WIN" : "YOU LOSE";
+    document.getElementById("endScreen").style.display = "flex";
+    music.pause();
+  }
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+
+</body>
+</html>
