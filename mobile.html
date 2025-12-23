@@ -216,8 +216,12 @@ let win = false;
 let lose = false;
 let started = false;
 
-/* CONSTANT SPEED */
-const FALL_SPEED = 2.5;
+/* CONSTANT SPEED (UPDATED)
+   Normal drop is one-third of previous (2.5 -> 0.8333...)
+   Fast drop stays the same absolute speed as before (2.5 * 5 = 12.5)
+*/
+const FALL_SPEED = 2.5 / 3;
+const FAST_SPEED = 12.5;
 
 /* ================= HELPERS ================= */
 
@@ -314,7 +318,8 @@ function draw() {
 function update() {
   if (!started || paused || win || lose || !falling) return;
 
-  falling.y += falling.fast ? FALL_SPEED * 5 : FALL_SPEED;
+  // UPDATED: normal speed slower; fast speed unchanged
+  falling.y += falling.fast ? FAST_SPEED : FALL_SPEED;
 
   const bY = baseY();
   const targetY = bY - stacks[falling.col].length * stackHeight();
@@ -550,4 +555,3 @@ loop();
 
 </body>
 </html>
-
